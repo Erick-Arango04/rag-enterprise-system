@@ -1,0 +1,27 @@
+# FastAPI y servidor
+fastapi==0.109.0
+uvicorn[standard]==0.27.0
+python-multipart==0.0.6
+
+# Base de datos
+psycopg2-binary==2.9.9
+sqlalchemy==2.0.25
+
+# Vector search
+pgvector==0.2.4
+
+# Almacenamiento
+minio==7.2.3
+
+# Cliente de Claude
+anthropic==0.18.1
+
+# Procesamiento de documentos
+pypdf==4.0.1
+python-docx==1.1.0
+openpyxl==3.1.2
+
+# Utilidades
+python-dotenv==1.0.0
+pydantic==2.5.3
+pydantic-settings==2.1.0
