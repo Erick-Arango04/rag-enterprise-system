@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from src.config.settings import get_settings
+from src.api.routes import router as document_router
 
 settings = get_settings()
 
@@ -18,6 +19,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include routers
+app.include_router(document_router)
+
 
 @app.get("/")
 async def root():
