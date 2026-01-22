@@ -37,12 +37,28 @@ This is a RAG (Retrieval-Augmented Generation) enterprise system designed for do
 - All services run on the same Docker network (`rag-network`) for inter-service communication
 
 ### Directory Structure
-- `src/`: Source code (currently empty - implementation pending)
+- `src/`: Application source code
+  - `config/`: Configuration modules
+    - `settings.py`: Environment variable configuration
+    - `database.py`: SQLAlchemy session management
+  - `models/`: Data models
+    - `database.py`: SQLAlchemy ORM models
+    - `schemas.py`: Pydantic request/response models
+  - `services/`: Business logic
+    - `storage_service.py`: MinIO client wrapper
+    - `document_service.py`: Document upload/processing logic
+  - `api/`: API layer
+    - `routes.py`: FastAPI route definitions
+  - `main.py`: Application entry point
 - `init-db/`: PostgreSQL initialization scripts
   - `01-init.sql`: Creates pgvector extension, tables, and indexes
-- `docs/`: Documentation (currently empty)
+- `tests/`: Test files
+  - `conftest.py`: Pytest fixtures
+  - `test_storage_service.py`: Storage service unit tests
+  - `test_document_service.py`: Document service unit tests
+  - `test_upload_endpoint.py`: Upload endpoint integration tests
+- `docs/`: Documentation
 - `data/`: Local data storage (gitignored)
-- `tests/`: Test files (currently empty)
 
 ## Development Commands
 
@@ -105,6 +121,40 @@ pip install -r requirements.txt
 - **Base URL**: http://localhost:8000
 - **API Documentation**: http://localhost:8000/docs (Swagger UI)
 - **Alternative docs**: http://localhost:8000/redoc (ReDoc)
+
+### API Endpoints
+
+#### Document Upload
+```bash
+# Upload a document (PDF, DOCX, TXT, MD - max 50MB)
+curl -X POST "http://localhost:8000/api/v1/upload" \
+  -F "file=@document.pdf"
+
+# Response (201 Created)
+{"doc_id": 1, "filename": "document.pdf", "status": "pending"}
+```
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/v1/upload` | Upload a document |
+
+**Upload Error Codes:**
+- `400`: Invalid file type (only PDF, DOCX, TXT, MD allowed)
+- `413`: File too large (max 50MB)
+- `422`: No file provided
+- `503`: Storage service unavailable
+
+### Running Tests
+```bash
+# Activate virtual environment
+source .venv/bin/activate
+
+# Run all tests
+pytest tests/ -v
+
+# Run with coverage
+pytest tests/ -v --cov=src --cov-report=term-missing
+```
 
 ### Database Connection
 - **Host**: localhost
@@ -173,8 +223,9 @@ The API service requires the following environment variables (automatically conf
 
 ### Development Notes
 - The project uses Python 3.11 with FastAPI framework
-- Source code directory (`src/`) is currently being implemented
 - JSONB metadata fields in both tables allow flexible storage of additional attributes without schema changes
 - Cascade delete on `document_chunks` ensures cleanup when documents are removed
 - Hot-reload is enabled in Docker via volume mount (`./src:/app/src`)
 - The Anthropic SDK is used for generating embeddings via Claude API
+- Database connections use lazy initialization to support testing with mocks
+- StorageService is a singleton pattern for MinIO client management

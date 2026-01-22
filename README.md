@@ -95,14 +95,36 @@ docker exec -it rag-postgres psql -U rag_user -d rag_db -c \
 
 ## API Endpoints
 
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| GET | `/health` | Health check |
-| POST | `/documents` | Upload a document |
-| GET | `/documents` | List all documents |
-| GET | `/documents/{id}` | Get document details |
-| DELETE | `/documents/{id}` | Delete a document |
-| POST | `/query` | Perform semantic search |
+| Method | Endpoint | Description | Status |
+|--------|----------|-------------|--------|
+| GET | `/` | API info | Implemented |
+| GET | `/health` | Health check | Implemented |
+| POST | `/api/v1/upload` | Upload a document | Implemented |
+| GET | `/documents` | List all documents | Planned |
+| GET | `/documents/{id}` | Get document details | Planned |
+| DELETE | `/documents/{id}` | Delete a document | Planned |
+| POST | `/query` | Perform semantic search | Planned |
+
+### Upload Endpoint
+
+Upload documents for processing. Accepts PDF, DOCX, TXT, and Markdown files up to 50MB.
+
+```bash
+# Upload a PDF
+curl -X POST "http://localhost:8000/api/v1/upload" \
+  -F "file=@document.pdf"
+
+# Response (201 Created)
+{"doc_id": 1, "filename": "document.pdf", "status": "pending"}
+```
+
+**Error Responses:**
+| Code | Description |
+|------|-------------|
+| 400 | Invalid file type (only PDF, DOCX, TXT, MD) |
+| 413 | File too large (max 50MB) |
+| 422 | No file provided |
+| 503 | Storage service unavailable |
 
 Full API documentation available at http://localhost:8000/docs
 
@@ -165,15 +187,46 @@ Stores text chunks with vector embeddings.
 
 ```
 rag-enterprise-system/
-├── src/                    # Application source code
-├── init-db/                # Database initialization scripts
-│   └── 01-init.sql         # Schema and pgvector setup
-├── docs/                   # Documentation
-├── tests/                  # Test files
-├── docker-compose.yml      # Container orchestration
-├── Dockerfile              # API container build
-├── requirements.txt        # Python dependencies
-└── CLAUDE.md               # AI assistant instructions
+├── src/                        # Application source code
+│   ├── api/
+│   │   └── routes.py           # API route definitions
+│   ├── config/
+│   │   ├── settings.py         # Environment configuration
+│   │   └── database.py         # SQLAlchemy session management
+│   ├── models/
+│   │   ├── database.py         # ORM models
+│   │   └── schemas.py          # Pydantic schemas
+│   ├── services/
+│   │   ├── storage_service.py  # MinIO client wrapper
+│   │   └── document_service.py # Document business logic
+│   └── main.py                 # Application entry point
+├── tests/                      # Test files
+│   ├── conftest.py             # Pytest fixtures
+│   ├── test_storage_service.py # Storage unit tests
+│   ├── test_document_service.py# Document unit tests
+│   └── test_upload_endpoint.py # Integration tests
+├── init-db/                    # Database initialization scripts
+│   └── 01-init.sql             # Schema and pgvector setup
+├── docker-compose.yml          # Container orchestration
+├── Dockerfile                  # API container build
+├── requirements.txt            # Python dependencies
+└── CLAUDE.md                   # AI assistant instructions
+```
+
+## Testing
+
+```bash
+# Activate virtual environment
+source .venv/bin/activate
+
+# Install test dependencies
+pip install pytest pytest-asyncio httpx
+
+# Run all tests
+pytest tests/ -v
+
+# Run with coverage
+pytest tests/ -v --cov=src --cov-report=term-missing
 ```
 
 ## License
