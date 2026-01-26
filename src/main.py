@@ -1,7 +1,15 @@
+import logging
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from src.config.settings import get_settings
 from src.api.routes import router as document_router
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+)
 
 settings = get_settings()
 

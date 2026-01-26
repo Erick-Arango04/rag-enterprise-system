@@ -1,3 +1,5 @@
+from datetime import datetime, timezone
+
 from fastapi import HTTPException, UploadFile
 from sqlalchemy.orm import Session
 from minio.error import S3Error
@@ -71,7 +73,8 @@ class DocumentService:
         self.db.add(document)
         self.db.flush()
 
-        object_key = f"documents/{document.id}/{file.filename}"
+        now = datetime.now(timezone.utc)
+        object_key = f"documents/{now.year}/{now.month:02d}/{document.id}_{file.filename}"
 
         try:
             self.storage_service.upload_file(
@@ -90,4 +93,5 @@ class DocumentService:
             doc_id=document.id,
             filename=document.filename,
             status=document.processing_status,
+            minio_object_key=object_key,
         )

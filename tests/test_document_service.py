@@ -195,7 +195,7 @@ class TestDocumentService:
 
     @pytest.mark.asyncio
     async def test_minio_object_key_format(self, service, mock_db, mock_storage):
-        """Test MinIO path is documents/{doc_id}/{filename}."""
+        """Test MinIO path is documents/{year}/{month}/{doc_id}_{filename}."""
         mock_db.flush.side_effect = lambda: setattr(
             mock_db.add.call_args[0][0], "id", 42
         )
@@ -205,4 +205,8 @@ class TestDocumentService:
 
         mock_storage.upload_file.assert_called_once()
         call_args = mock_storage.upload_file.call_args[0]
-        assert call_args[0] == "documents/42/test.pdf"
+        object_key = call_args[0]
+        # Verify date-based path format: documents/{year}/{month}/{doc_id}_{filename}
+        import re
+        pattern = r"^documents/\d{4}/\d{2}/42_test\.pdf$"
+        assert re.match(pattern, object_key), f"Object key '{object_key}' doesn't match expected format"

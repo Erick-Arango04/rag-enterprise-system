@@ -10,7 +10,7 @@ class StorageService:
     def __init__(self):
         settings = get_settings()
 
-        self.client = Minio(
+        self.clientMinio = Minio(
             settings.minio_endpoint,
             access_key=settings.minio_access_key,
             secret_key=settings.minio_secret_key,
@@ -23,8 +23,8 @@ class StorageService:
     def _ensure_bucket_exists(self) -> None:
         """Create the bucket if it doesn't exist."""
         try:
-            if not self.client.bucket_exists(self.bucket_name):
-                self.client.make_bucket(self.bucket_name)
+            if not self.clientMinio.bucket_exists(self.bucket_name):
+                self.clientMinio.make_bucket(self.bucket_name)
         except S3Error:
             pass
 
@@ -45,19 +45,41 @@ class StorageService:
         Raises:
             S3Error: If the upload fails
         """
-        self.client.put_object(
+        (self.clientMinio.put_object(
             self.bucket_name,
             object_key,
             BytesIO(file_data),
             file_size,
             content_type=content_type,
-        )
+        ))
         return object_key
+
+    def download_file(self, object_key: str) -> bytes:
+        """Download a file from MinIO.
+
+        Args:
+            object_key: The path/key of the object in MinIO
+
+        Returns:
+            The file content as bytes
+
+        Raises:
+            S3Error: If the download fails
+        """
+        response = None
+        try:
+            response = self.clientMinio.get_object(self.bucket_name, object_key)
+            return response.read()
+        finally:
+            if response:
+                response.close()
+                response.release_conn()
+
 
     def is_available(self) -> bool:
         """Check if MinIO is available and accessible."""
         try:
-            self.client.bucket_exists(self.bucket_name)
+            self.clientMinio.bucket_exists(self.bucket_name)
             return True
         except Exception:
             return False

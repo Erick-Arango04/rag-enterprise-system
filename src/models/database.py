@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, JSON
+from sqlalchemy import Column, Integer, String, DateTime, JSON, Text
 from sqlalchemy.sql import func
 from src.config.database import Base
 
@@ -15,3 +15,7 @@ class Document(Base):
     processing_status = Column(String(50), default="pending")
     doc_metadata = Column("metadata", JSON)
     minio_object_key = Column(String(500))
+    extracted_text = Column(Text)
+    page_count = Column(Integer)
+    extraction_error = Column(Text)
+    processed_at = Column(DateTime)

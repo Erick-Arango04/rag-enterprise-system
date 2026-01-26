@@ -89,3 +89,50 @@ class TestStorageService:
             service.client = mock_minio_client
 
         mock_minio_client.make_bucket.assert_called_once_with("documents")
+
+    def test_download_file_success(self, storage_service, mock_minio_client):
+        """Test successful file download from MinIO."""
+        mock_response = MagicMock()
+        mock_response.read.return_value = b"file content"
+        mock_minio_client.get_object.return_value = mock_response
+
+        # StorageService uses clientMinio internally
+        storage_service.clientMinio = mock_minio_client
+
+        result = storage_service.download_file("documents/1/test.pdf")
+
+        assert result == b"file content"
+        mock_minio_client.get_object.assert_called_once_with(
+            "documents", "documents/1/test.pdf"
+        )
+        mock_response.close.assert_called_once()
+        mock_response.release_conn.assert_called_once()
+
+    def test_download_file_minio_error(self, storage_service, mock_minio_client):
+        """Test S3Error is raised when MinIO download fails."""
+        storage_service.clientMinio = mock_minio_client
+        mock_minio_client.get_object.side_effect = S3Error(
+            "GetObject",
+            "NoSuchKey",
+            "The specified key does not exist",
+            "GET",
+            {},
+            None,
+            None,
+        )
+
+        with pytest.raises(S3Error):
+            storage_service.download_file("documents/1/missing.pdf")
+
+    def test_download_file_closes_response_on_error(self, storage_service, mock_minio_client):
+        """Test response is closed even if read fails."""
+        mock_response = MagicMock()
+        mock_response.read.side_effect = Exception("Read error")
+        mock_minio_client.get_object.return_value = mock_response
+        storage_service.clientMinio = mock_minio_client
+
+        with pytest.raises(Exception, match="Read error"):
+            storage_service.download_file("documents/1/test.pdf")
+
+        mock_response.close.assert_called_once()
+        mock_response.release_conn.assert_called_once()
