@@ -2,8 +2,13 @@ from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Pa
 from sqlalchemy.orm import Session
 
 from src.config.database import get_db
-from src.models.database import Document
-from src.models.schemas import DocumentStatusResponse, UploadResponse
+from src.models.database import Document, DocumentChunk
+from src.models.schemas import (
+    ChunkResponse,
+    DocumentChunksResponse,
+    DocumentStatusResponse,
+    UploadResponse,
+)
 from src.services.background_tasks import process_document_task
 from src.services.document_service import DocumentService
 from src.services.storage_service import StorageService, get_storage_service
@@ -63,4 +68,43 @@ async def get_document_status(
         error=document.extraction_error,
         processed_at=document.processed_at,
         upload_timestamp=document.upload_timestamp,
+    )
+
+
+@router.get("/documents/{document_id}/chunks", response_model=DocumentChunksResponse)
+async def get_document_chunks(
+    document_id: int = Path(..., gt=0),
+    db: Session = Depends(get_db),
+) -> DocumentChunksResponse:
+    """Get all chunks for a document ordered by chunk_index.
+
+    Returns:
+        Document info and list of chunks with their content and metadata
+    """
+    document = db.get(Document, document_id)
+    if not document:
+        raise HTTPException(status_code=404, detail="Document not found")
+
+    chunks = (
+        db.query(DocumentChunk)
+        .filter(DocumentChunk.document_id == document_id)
+        .order_by(DocumentChunk.chunk_index)
+        .all()
+    )
+
+    return DocumentChunksResponse(
+        document_id=document.id,
+        filename=document.filename,
+        status=document.processing_status,
+        total_chunks=len(chunks),
+        chunks=[
+            ChunkResponse(
+                id=chunk.id,
+                chunk_index=chunk.chunk_index,
+                content=chunk.content,
+                metadata=chunk.chunk_metadata,
+                created_at=chunk.created_at,
+            )
+            for chunk in chunks
+        ],
     )

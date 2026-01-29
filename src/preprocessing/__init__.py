@@ -1,5 +1,6 @@
-"""Document preprocessing module for text extraction."""
+"""Document preprocessing module for text extraction and chunking."""
 
+from src.preprocessing.chunking import CHUNKING_CONFIG, TextChunk, TextChunker
 from src.preprocessing.exceptions import (
     CorruptedFileError,
     ExtractionError,
@@ -8,8 +9,11 @@ from src.preprocessing.exceptions import (
 from src.preprocessing.extractors import DocumentExtractor
 
 __all__ = [
+    "CHUNKING_CONFIG",
+    "CorruptedFileError",
     "DocumentExtractor",
     "ExtractionError",
-    "CorruptedFileError",
+    "TextChunk",
+    "TextChunker",
     "UnsupportedFormatError",
 ]

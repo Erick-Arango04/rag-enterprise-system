@@ -100,10 +100,11 @@ docker exec -it rag-postgres psql -U rag_user -d rag_db -c \
 | GET | `/` | API info | Implemented |
 | GET | `/health` | Health check | Implemented |
 | POST | `/api/v1/upload` | Upload a document | Implemented |
-| GET | `/documents` | List all documents | Planned |
-| GET | `/documents/{id}` | Get document details | Planned |
-| DELETE | `/documents/{id}` | Delete a document | Planned |
-| POST | `/query` | Perform semantic search | Planned |
+| GET | `/api/v1/documents/{id}` | Get document status | Implemented |
+| GET | `/api/v1/documents/{id}/chunks` | Get document chunks | Implemented |
+| GET | `/api/v1/documents` | List all documents | Planned |
+| DELETE | `/api/v1/documents/{id}` | Delete a document | Planned |
+| POST | `/api/v1/query` | Perform semantic search | Planned |
 
 ### Upload Endpoint
 
@@ -115,7 +116,12 @@ curl -X POST "http://localhost:8000/api/v1/upload" \
   -F "file=@document.pdf"
 
 # Response (201 Created)
-{"doc_id": 1, "filename": "document.pdf", "status": "pending"}
+{
+  "doc_id": 1,
+  "filename": "document.pdf",
+  "status": "pending",
+  "minio_object_key": "documents/2024/01/1_document.pdf"
+}
 ```
 
 **Error Responses:**
@@ -126,6 +132,53 @@ curl -X POST "http://localhost:8000/api/v1/upload" \
 | 422 | No file provided |
 | 503 | Storage service unavailable |
 
+### Document Status Endpoint
+
+Get the processing status of an uploaded document.
+
+```bash
+curl "http://localhost:8000/api/v1/documents/1"
+
+# Response (200 OK)
+{
+  "id": 1,
+  "filename": "document.pdf",
+  "status": "completed",
+  "page_count": 5,
+  "text_preview": "First 200 characters of extracted text...",
+  "error": null,
+  "processed_at": "2024-01-15T10:30:00Z",
+  "upload_timestamp": "2024-01-15T10:29:00Z"
+}
+```
+
+**Status Values:** `pending` → `processing` → `completed` | `extraction_failed` | `error`
+
+### Document Chunks Endpoint
+
+Get all text chunks for a processed document.
+
+```bash
+curl "http://localhost:8000/api/v1/documents/1/chunks"
+
+# Response (200 OK)
+{
+  "document_id": 1,
+  "filename": "document.pdf",
+  "status": "completed",
+  "total_chunks": 3,
+  "chunks": [
+    {
+      "id": 1,
+      "chunk_index": 0,
+      "content": "Text content of chunk...",
+      "metadata": {"start_char": 0, "end_char": 1000, "filename": "document.pdf"},
+      "created_at": "2024-01-15T10:30:00Z"
+    }
+  ]
+}
+```
+
 Full API documentation available at http://localhost:8000/docs
 
 ## Database Schema
@@ -135,12 +188,17 @@ Stores document metadata and processing status.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| id | UUID | Primary key |
-| filename | VARCHAR | Original filename |
-| content_type | VARCHAR | MIME type |
-| file_size | BIGINT | Size in bytes |
-| minio_object_key | VARCHAR | MinIO storage reference |
-| processing_status | VARCHAR | pending/processing/completed/failed |
+| id | INTEGER | Primary key (auto-increment) |
+| filename | VARCHAR(255) | Original filename |
+| content_type | VARCHAR(100) | MIME type |
+| file_size | INTEGER | Size in bytes |
+| minio_object_key | VARCHAR(500) | MinIO storage reference |
+| processing_status | VARCHAR(50) | pending/processing/completed/extraction_failed/error |
+| extracted_text | TEXT | Full extracted text content |
+| page_count | INTEGER | Number of pages (for PDFs) |
+| extraction_error | TEXT | Error message if extraction failed |
+| processed_at | TIMESTAMP | When processing completed |
+| upload_timestamp | TIMESTAMP | When document was uploaded |
 | metadata | JSONB | Additional attributes |
 
 ### Document Chunks Table
@@ -148,12 +206,13 @@ Stores text chunks with vector embeddings.
 
 | Column | Type | Description |
 |--------|------|-------------|
-| id | UUID | Primary key |
-| document_id | UUID | Foreign key to documents |
-| chunk_index | INTEGER | Position in document |
+| id | INTEGER | Primary key (auto-increment) |
+| document_id | INTEGER | Foreign key to documents (CASCADE delete) |
+| chunk_index | INTEGER | Position in document (0-indexed) |
 | content | TEXT | Chunk text content |
-| embedding | VECTOR(1024) | Vector embedding |
-| metadata | JSONB | Additional attributes |
+| embedding | VECTOR(1024) | Vector embedding (null until generated) |
+| metadata | JSONB | Position info (start_char, end_char, filename) |
+| created_at | TIMESTAMP | When chunk was created |
 
 ## Configuration
 
@@ -176,41 +235,57 @@ Stores text chunks with vector embeddings.
 
 ## Document Processing Pipeline
 
-1. Upload document to MinIO object storage
-2. Create document record with `processing_status='pending'`
-3. Extract and chunk document text
-4. Generate embeddings for each chunk via Claude API
-5. Store chunks with embeddings in pgvector
-6. Update document status to `'completed'`
+1. **Upload** - Store document in MinIO, create record with `status='pending'`
+2. **Background Processing** - Download from MinIO, extract text using appropriate extractor (PDF, DOCX, TXT, MD)
+3. **Chunking** - Split text into overlapping chunks (default: 1000 chars, 200 overlap)
+4. **Storage** - Store chunks in `document_chunks` table with position metadata
+5. **Completion** - Update document `status` to `'completed'`
+6. **Embedding Generation** - Generate embeddings via Claude API *(planned)*
+7. **Semantic Search** - Query similar chunks using pgvector *(planned)*
+
+### Chunking Configuration
+- **Chunk Size**: 1000 characters
+- **Overlap**: 200 characters
+- **Separator**: Paragraph boundaries (`\n\n`)
+- Chunks preserve word boundaries
 
 ## Project Structure
 
 ```
 rag-enterprise-system/
-├── src/                        # Application source code
+├── src/                          # Application source code
 │   ├── api/
-│   │   └── routes.py           # API route definitions
+│   │   └── routes.py             # API route definitions
 │   ├── config/
-│   │   ├── settings.py         # Environment configuration
-│   │   └── database.py         # SQLAlchemy session management
+│   │   ├── settings.py           # Environment configuration
+│   │   └── database.py           # SQLAlchemy session management
 │   ├── models/
-│   │   ├── database.py         # ORM models
-│   │   └── schemas.py          # Pydantic schemas
+│   │   ├── database.py           # ORM models (Document, DocumentChunk)
+│   │   └── schemas.py            # Pydantic request/response schemas
+│   ├── preprocessing/
+│   │   ├── extractors.py         # Text extraction (PDF, DOCX, TXT, MD)
+│   │   ├── chunking.py           # Text chunking with overlap
+│   │   └── exceptions.py         # Custom extraction exceptions
 │   ├── services/
-│   │   ├── storage_service.py  # MinIO client wrapper
-│   │   └── document_service.py # Document business logic
-│   └── main.py                 # Application entry point
-├── tests/                      # Test files
-│   ├── conftest.py             # Pytest fixtures
-│   ├── test_storage_service.py # Storage unit tests
-│   ├── test_document_service.py# Document unit tests
-│   └── test_upload_endpoint.py # Integration tests
-├── init-db/                    # Database initialization scripts
-│   └── 01-init.sql             # Schema and pgvector setup
-├── docker-compose.yml          # Container orchestration
-├── Dockerfile                  # API container build
-├── requirements.txt            # Python dependencies
-└── CLAUDE.md                   # AI assistant instructions
+│   │   ├── storage_service.py    # MinIO client wrapper
+│   │   ├── document_service.py   # Document upload logic
+│   │   └── background_tasks.py   # Async processing (extraction + chunking)
+│   └── main.py                   # Application entry point
+├── tests/                        # Test files (102 tests)
+│   ├── conftest.py               # Pytest fixtures
+│   ├── test_storage_service.py   # Storage unit tests
+│   ├── test_document_service.py  # Document unit tests
+│   ├── test_upload_endpoint.py   # API integration tests
+│   ├── test_background_tasks.py  # Background task tests
+│   ├── test_extractors.py        # Extractor unit tests
+│   ├── test_chunking.py          # Chunking unit tests
+│   └── test_exceptions.py        # Exception tests
+├── init-db/                      # Database initialization scripts
+│   └── 01-init.sql               # Schema and pgvector setup
+├── docker-compose.yml            # Container orchestration
+├── Dockerfile                    # API container build
+├── requirements.txt              # Python dependencies
+└── CLAUDE.md                     # AI assistant instructions
 ```
 
 ## Testing

@@ -27,3 +27,25 @@ class DocumentStatusResponse(BaseModel):
     error: Optional[str] = None
     processed_at: Optional[datetime] = None
     upload_timestamp: Optional[datetime] = None
+
+
+class ChunkResponse(BaseModel):
+    """Response model for a single document chunk."""
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: int
+    chunk_index: int
+    content: str
+    metadata: Optional[dict] = None
+    created_at: Optional[datetime] = None
+
+
+class DocumentChunksResponse(BaseModel):
+    """Response model for document chunks endpoint."""
+
+    document_id: int
+    filename: str
+    status: str
+    total_chunks: int
+    chunks: list[ChunkResponse]

@@ -47,6 +47,11 @@ This is a RAG (Retrieval-Augmented Generation) enterprise system designed for do
   - `services/`: Business logic
     - `storage_service.py`: MinIO client wrapper
     - `document_service.py`: Document upload/processing logic
+    - `background_tasks.py`: Async document processing (extraction + chunking)
+  - `preprocessing/`: Document processing utilities
+    - `extractors.py`: Text extraction from PDF, DOCX, TXT, MD
+    - `chunking.py`: Text chunking with overlap for embeddings
+    - `exceptions.py`: Custom extraction exceptions
   - `api/`: API layer
     - `routes.py`: FastAPI route definitions
   - `main.py`: Application entry point
@@ -56,7 +61,11 @@ This is a RAG (Retrieval-Augmented Generation) enterprise system designed for do
   - `conftest.py`: Pytest fixtures
   - `test_storage_service.py`: Storage service unit tests
   - `test_document_service.py`: Document service unit tests
-  - `test_upload_endpoint.py`: Upload endpoint integration tests
+  - `test_upload_endpoint.py`: API endpoint integration tests (upload, status, chunks)
+  - `test_background_tasks.py`: Background task unit tests
+  - `test_extractors.py`: Document extractor unit tests
+  - `test_chunking.py`: Text chunking unit tests
+  - `test_exceptions.py`: Custom exception tests
 - `docs/`: Documentation
 - `data/`: Local data storage (gitignored)
 
@@ -124,6 +133,12 @@ pip install -r requirements.txt
 
 ### API Endpoints
 
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/v1/upload` | Upload a document |
+| GET | `/api/v1/documents/{id}` | Get document processing status |
+| GET | `/api/v1/documents/{id}/chunks` | Get document chunks |
+
 #### Document Upload
 ```bash
 # Upload a document (PDF, DOCX, TXT, MD - max 50MB)
@@ -131,18 +146,34 @@ curl -X POST "http://localhost:8000/api/v1/upload" \
   -F "file=@document.pdf"
 
 # Response (201 Created)
-{"doc_id": 1, "filename": "document.pdf", "status": "pending"}
+{"doc_id": 1, "filename": "document.pdf", "status": "pending", "minio_object_key": "documents/2024/01/1_document.pdf"}
 ```
-
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| POST | `/api/v1/upload` | Upload a document |
 
 **Upload Error Codes:**
 - `400`: Invalid file type (only PDF, DOCX, TXT, MD allowed)
 - `413`: File too large (max 50MB)
 - `422`: No file provided
 - `503`: Storage service unavailable
+
+#### Document Status
+```bash
+# Get processing status of a document
+curl "http://localhost:8000/api/v1/documents/1"
+
+# Response (200 OK)
+{"id": 1, "filename": "document.pdf", "status": "completed", "page_count": 5, "text_preview": "First 200 chars...", "error": null, "processed_at": "2024-01-15T10:30:00Z", "upload_timestamp": "2024-01-15T10:29:00Z"}
+```
+
+**Status Values:** `pending` → `processing` → `completed` | `extraction_failed` | `error`
+
+#### Document Chunks
+```bash
+# Get all chunks for a document
+curl "http://localhost:8000/api/v1/documents/1/chunks"
+
+# Response (200 OK)
+{"document_id": 1, "filename": "document.pdf", "status": "completed", "total_chunks": 3, "chunks": [{"id": 1, "chunk_index": 0, "content": "...", "metadata": {"start_char": 0, "end_char": 1000, "filename": "document.pdf"}, "created_at": "..."}]}
+```
 
 ### Running Tests
 ```bash
@@ -192,6 +223,12 @@ mc mb local/documents  # Create a bucket for documents
 
 ## Key Technical Details
 
+### Chunking Configuration
+- **Chunk size**: 1000 characters (default)
+- **Overlap**: 200 characters (default)
+- **Separator**: Paragraph boundaries (`\n\n`)
+- Chunks preserve word boundaries and include position metadata (`start_char`, `end_char`)
+
 ### Embedding Configuration
 - Vector dimensions: **1024** (configured in `document_chunks.embedding` column)
 - When implementing embedding generation, ensure the model outputs 1024-dimensional vectors
@@ -202,13 +239,14 @@ mc mb local/documents  # Create a bucket for documents
 - For production workloads with large datasets, consider adjusting the `lists` parameter based on dataset size
 
 ### Document Processing Pipeline
-The expected workflow (based on schema design):
-1. Upload document → store in MinIO
-2. Create entry in `documents` table with `processing_status='pending'`
-3. Process document into chunks
-4. Generate embeddings for each chunk
-5. Store chunks with embeddings in `document_chunks`
-6. Update document `processing_status` to 'completed'
+The implemented workflow:
+1. **Upload** (`POST /upload`) → Store file in MinIO, create `documents` entry with `status='pending'`
+2. **Background Processing** (automatic) → Download from MinIO, extract text using `DocumentExtractor`
+3. **Chunking** → Split extracted text into overlapping chunks using `TextChunker` (default: 1000 chars, 200 overlap)
+4. **Storage** → Store chunks in `document_chunks` table with metadata
+5. **Completion** → Update `processing_status` to `'completed'`
+
+**Pending:** Embedding generation (step between chunking and completion)
 
 ## Implementation Notes
 

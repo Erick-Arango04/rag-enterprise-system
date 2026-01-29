@@ -5,7 +5,8 @@ from datetime import datetime,timezone
 from sqlalchemy.orm import Session
 
 from src.config.database import get_session_local
-from src.models.database import Document
+from src.models.database import Document, DocumentChunk
+from src.preprocessing.chunking import TextChunker
 from src.preprocessing.extractors import DocumentExtractor
 from src.services.storage_service import StorageService
 
@@ -56,10 +57,31 @@ def process_document_task(
             document.processing_status = "extraction_failed"
             document.extraction_error = error
         else:
-            logger.info(f"Document {document_id} processed successfully")
-            document.processing_status = "processed"
+            logger.info(f"Text extraction complete for document {document_id}")
             document.extracted_text = extracted_text
             document.page_count = page_count
+
+            # Chunk the extracted text
+            logger.info(f"Starting chunking for document {document_id}")
+            chunker = TextChunker()
+            chunk_records = chunker.chunk_to_db_records(
+                extracted_text,
+                document_id=document_id,
+                extra_metadata={"filename": document.filename}
+            )
+
+            # Store chunks in database
+            for record in chunk_records:
+                chunk = DocumentChunk(
+                    document_id=record["document_id"],
+                    chunk_index=record["chunk_index"],
+                    content=record["content"],
+                    chunk_metadata=record["metadata"],
+                )
+                db.add(chunk)
+
+            document.processing_status = "completed"
+            logger.info(f"Document {document_id} completed: {len(chunk_records)} chunks created")
 
         document.processed_at = datetime.now(timezone.utc)
         db.commit()

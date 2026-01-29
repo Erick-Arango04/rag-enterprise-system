@@ -1,5 +1,6 @@
-from sqlalchemy import Column, Integer, String, DateTime, JSON, Text
+from sqlalchemy import Column, Integer, String, DateTime, JSON, Text, ForeignKey
 from sqlalchemy.sql import func
+from pgvector.sqlalchemy import Vector
 from src.config.database import Base
 
 
@@ -19,3 +20,21 @@ class Document(Base):
     page_count = Column(Integer)
     extraction_error = Column(Text)
     processed_at = Column(DateTime)
+
+
+class DocumentChunk(Base):
+    """SQLAlchemy model for document_chunks table."""
+    __tablename__ = "document_chunks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    document_id = Column(
+        Integer,
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True
+    )
+    chunk_index = Column(Integer, nullable=False)
+    content = Column(Text, nullable=False)
+    embedding = Column(Vector(1024))  # pgvector - null until embedding generation
+    chunk_metadata = Column("metadata", JSON)
+    created_at = Column(DateTime, server_default=func.now())

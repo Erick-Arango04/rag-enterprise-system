@@ -1,6 +1,8 @@
 import pytest
 from fastapi.testclient import TestClient
 
+from src.models.database import DocumentChunk
+
 
 class TestUploadEndpoint:
     """Integration tests for POST /api/v1/upload endpoint."""
@@ -215,5 +217,196 @@ class TestDocumentStatusEndpoint:
     def test_get_document_negative_id_returns_422(self, client):
         """GET /documents/{id} returns 422 for negative document ID."""
         response = client.get("/api/v1/documents/-1")
+
+        assert response.status_code == 422
+
+
+class TestDocumentChunksEndpoint:
+    """Integration tests for GET /api/v1/documents/{document_id}/chunks endpoint."""
+
+    def test_get_chunks_returns_200(self, client, db_session, sample_pdf):
+        """GET /documents/{id}/chunks returns 200 for document with chunks."""
+        # Upload document
+        filename, content, content_type = sample_pdf
+        response = client.post(
+            "/api/v1/upload",
+            files={"file": (filename, content, content_type)},
+        )
+        doc_id = response.json()["doc_id"]
+
+        # Create a chunk
+        chunk = DocumentChunk(
+            document_id=doc_id,
+            chunk_index=0,
+            content="Test chunk content",
+            chunk_metadata={"start_char": 0, "end_char": 18},
+        )
+        db_session.add(chunk)
+        db_session.commit()
+
+        # Test endpoint
+        response = client.get(f"/api/v1/documents/{doc_id}/chunks")
+        assert response.status_code == 200
+
+    def test_get_chunks_response_schema(self, client, db_session, sample_pdf):
+        """Response contains all required fields."""
+        filename, content, content_type = sample_pdf
+        response = client.post(
+            "/api/v1/upload",
+            files={"file": (filename, content, content_type)},
+        )
+        doc_id = response.json()["doc_id"]
+
+        # Create a chunk
+        chunk = DocumentChunk(
+            document_id=doc_id,
+            chunk_index=0,
+            content="Test chunk content",
+            chunk_metadata={"start_char": 0, "end_char": 18},
+        )
+        db_session.add(chunk)
+        db_session.commit()
+
+        response = client.get(f"/api/v1/documents/{doc_id}/chunks")
+        data = response.json()
+
+        # Verify top-level fields
+        assert "document_id" in data
+        assert "filename" in data
+        assert "status" in data
+        assert "total_chunks" in data
+        assert "chunks" in data
+
+        # Verify chunk fields
+        assert len(data["chunks"]) == 1
+        chunk_data = data["chunks"][0]
+        assert "id" in chunk_data
+        assert "chunk_index" in chunk_data
+        assert "content" in chunk_data
+        assert "metadata" in chunk_data
+        assert "created_at" in chunk_data
+
+    def test_get_chunks_returns_correct_document_info(self, client, db_session, sample_pdf):
+        """Response contains correct document data."""
+        filename, content, content_type = sample_pdf
+        response = client.post(
+            "/api/v1/upload",
+            files={"file": (filename, content, content_type)},
+        )
+        doc_id = response.json()["doc_id"]
+
+        response = client.get(f"/api/v1/documents/{doc_id}/chunks")
+        data = response.json()
+
+        assert data["document_id"] == doc_id
+        assert data["filename"] == filename
+        assert data["status"] == "pending"
+
+    def test_get_chunks_returns_empty_list_for_document_without_chunks(self, client, sample_pdf):
+        """Response returns empty chunks list when no chunks exist."""
+        filename, content, content_type = sample_pdf
+        response = client.post(
+            "/api/v1/upload",
+            files={"file": (filename, content, content_type)},
+        )
+        doc_id = response.json()["doc_id"]
+
+        response = client.get(f"/api/v1/documents/{doc_id}/chunks")
+        data = response.json()
+
+        assert data["total_chunks"] == 0
+        assert data["chunks"] == []
+
+    def test_get_chunks_returns_chunks_ordered_by_index(self, client, db_session, sample_pdf):
+        """Chunks are returned ordered by chunk_index."""
+        filename, content, content_type = sample_pdf
+        response = client.post(
+            "/api/v1/upload",
+            files={"file": (filename, content, content_type)},
+        )
+        doc_id = response.json()["doc_id"]
+
+        # Create chunks out of order
+        for idx in [2, 0, 1]:
+            chunk = DocumentChunk(
+                document_id=doc_id,
+                chunk_index=idx,
+                content=f"Chunk {idx} content",
+                chunk_metadata={"index": idx},
+            )
+            db_session.add(chunk)
+        db_session.commit()
+
+        response = client.get(f"/api/v1/documents/{doc_id}/chunks")
+        data = response.json()
+
+        assert data["total_chunks"] == 3
+        indices = [c["chunk_index"] for c in data["chunks"]]
+        assert indices == [0, 1, 2]
+
+    def test_get_chunks_returns_correct_chunk_content(self, client, db_session, sample_pdf):
+        """Chunk content matches stored data."""
+        filename, content, content_type = sample_pdf
+        response = client.post(
+            "/api/v1/upload",
+            files={"file": (filename, content, content_type)},
+        )
+        doc_id = response.json()["doc_id"]
+
+        expected_content = "This is specific chunk content for testing"
+        chunk = DocumentChunk(
+            document_id=doc_id,
+            chunk_index=0,
+            content=expected_content,
+            chunk_metadata={},
+        )
+        db_session.add(chunk)
+        db_session.commit()
+
+        response = client.get(f"/api/v1/documents/{doc_id}/chunks")
+        data = response.json()
+
+        assert data["chunks"][0]["content"] == expected_content
+
+    def test_get_chunks_returns_chunk_metadata(self, client, db_session, sample_pdf):
+        """Chunk metadata is correctly returned."""
+        filename, content, content_type = sample_pdf
+        response = client.post(
+            "/api/v1/upload",
+            files={"file": (filename, content, content_type)},
+        )
+        doc_id = response.json()["doc_id"]
+
+        expected_metadata = {"start_char": 0, "end_char": 100, "filename": "test.pdf"}
+        chunk = DocumentChunk(
+            document_id=doc_id,
+            chunk_index=0,
+            content="Test content",
+            chunk_metadata=expected_metadata,
+        )
+        db_session.add(chunk)
+        db_session.commit()
+
+        response = client.get(f"/api/v1/documents/{doc_id}/chunks")
+        data = response.json()
+
+        assert data["chunks"][0]["metadata"] == expected_metadata
+
+    def test_get_chunks_not_found_returns_404(self, client):
+        """GET /documents/{id}/chunks returns 404 for non-existent document."""
+        response = client.get("/api/v1/documents/99999/chunks")
+
+        assert response.status_code == 404
+        assert "Document not found" in response.json()["detail"]
+
+    def test_get_chunks_invalid_id_returns_422(self, client):
+        """GET /documents/{id}/chunks returns 422 for invalid document ID."""
+        response = client.get("/api/v1/documents/0/chunks")
+
+        assert response.status_code == 422
+
+    def test_get_chunks_negative_id_returns_422(self, client):
+        """GET /documents/{id}/chunks returns 422 for negative document ID."""
+        response = client.get("/api/v1/documents/-1/chunks")
 
         assert response.status_code == 422
