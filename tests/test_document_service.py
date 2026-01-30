@@ -1,10 +1,15 @@
 import pytest
 from unittest.mock import MagicMock, AsyncMock
-from fastapi import HTTPException, UploadFile
+from fastapi import UploadFile
 from starlette.datastructures import Headers
 from io import BytesIO
-from minio.error import S3Error
 
+from src.exceptions import (
+    FileUploadError,
+    FileSizeExceededError,
+    InvalidFileTypeError,
+    StorageConnectionError,
+)
 from src.services.document_service import DocumentService, MAX_FILE_SIZE, ALLOWED_MIME_TYPES
 from src.models.database import Document
 
@@ -95,15 +100,15 @@ class TestDocumentService:
         assert result.filename == "test.md"
 
     @pytest.mark.asyncio
-    async def test_upload_invalid_mime_type_raises_400(self, service):
-        """Test invalid MIME type returns 400."""
+    async def test_upload_invalid_mime_type_raises_error(self, service):
+        """Test invalid MIME type raises InvalidFileTypeError."""
         file = self._create_upload_file("test.png", b"content", "image/png")
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(InvalidFileTypeError) as exc_info:
             await service.upload_document(file)
 
-        assert exc_info.value.status_code == 400
-        assert "Invalid file type" in exc_info.value.detail
+        assert exc_info.value.content_type == "image/png"
+        assert exc_info.value.filename == "test.png"
 
     # Size validation tests
     @pytest.mark.asyncio
@@ -119,16 +124,16 @@ class TestDocumentService:
         assert result.doc_id == 1
 
     @pytest.mark.asyncio
-    async def test_upload_file_over_limit_raises_413(self, service):
-        """Test file over 50MB returns 413."""
+    async def test_upload_file_over_limit_raises_error(self, service):
+        """Test file over 50MB raises FileSizeExceededError."""
         large_content = b"x" * (MAX_FILE_SIZE + 1)
         file = self._create_upload_file("large.pdf", large_content, "application/pdf")
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(FileSizeExceededError) as exc_info:
             await service.upload_document(file)
 
-        assert exc_info.value.status_code == 413
-        assert "File too large" in exc_info.value.detail
+        assert exc_info.value.file_size == MAX_FILE_SIZE + 1
+        assert exc_info.value.max_size == MAX_FILE_SIZE
 
     @pytest.mark.asyncio
     async def test_upload_file_exactly_at_limit(self, service, mock_db):
@@ -145,18 +150,17 @@ class TestDocumentService:
 
     # MinIO availability tests
     @pytest.mark.asyncio
-    async def test_upload_minio_unavailable_raises_503(self, mock_db):
-        """Test MinIO unavailable returns 503."""
+    async def test_upload_minio_unavailable_raises_error(self, mock_db):
+        """Test MinIO unavailable raises StorageConnectionError."""
         mock_storage = MagicMock()
         mock_storage.is_available.return_value = False
         service = DocumentService(mock_db, mock_storage)
         file = self._create_upload_file("test.pdf", b"content", "application/pdf")
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(StorageConnectionError) as exc_info:
             await service.upload_document(file)
 
-        assert exc_info.value.status_code == 503
-        assert "Storage service is currently unavailable" in exc_info.value.detail
+        assert exc_info.value.endpoint == "storage"
 
     @pytest.mark.asyncio
     async def test_upload_minio_error_rollback(self, mock_db, mock_storage):
@@ -164,16 +168,15 @@ class TestDocumentService:
         mock_db.flush.side_effect = lambda: setattr(
             mock_db.add.call_args[0][0], "id", 1
         )
-        mock_storage.upload_file.side_effect = S3Error(
-            "PutObject", "Error", "Upload failed", "PUT", {}, None, None
+        mock_storage.upload_file.side_effect = FileUploadError(
+            "test.pdf", "documents", "Upload failed"
         )
         service = DocumentService(mock_db, mock_storage)
         file = self._create_upload_file("test.pdf", b"content", "application/pdf")
 
-        with pytest.raises(HTTPException) as exc_info:
+        with pytest.raises(FileUploadError):
             await service.upload_document(file)
 
-        assert exc_info.value.status_code == 503
         mock_db.rollback.assert_called_once()
 
     # Database tests

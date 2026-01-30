@@ -2,8 +2,8 @@ import pytest
 from unittest.mock import MagicMock, patch
 from io import BytesIO
 
+from src.exceptions import CorruptedFileError, UnsupportedFormatError
 from src.preprocessing.extractors import DocumentExtractor
-from src.preprocessing.exceptions import CorruptedFileError, UnsupportedFormatError
 
 
 class TestDocumentExtractor:

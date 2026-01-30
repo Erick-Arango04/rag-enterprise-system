@@ -4,6 +4,8 @@ import re
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from src.exceptions import InvalidChunkConfigError
+
 
 # Chunking configuration
 CHUNKING_CONFIG = {
@@ -76,7 +78,7 @@ class TextChunker:
             separator: String to split text on (default: paragraph boundary)
         """
         if chunk_overlap >= chunk_size:
-            raise ValueError("chunk_overlap must be less than chunk_size")
+            raise InvalidChunkConfigError(chunk_size, chunk_overlap)
 
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap

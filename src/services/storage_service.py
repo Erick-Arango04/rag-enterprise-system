@@ -2,6 +2,11 @@ from io import BytesIO
 from minio import Minio
 from minio.error import S3Error
 from src.config.settings import get_settings
+from src.exceptions import (
+    FileDownloadError,
+    FileUploadError,
+    StorageConnectionError,
+)
 
 
 class StorageService:
@@ -25,8 +30,11 @@ class StorageService:
         try:
             if not self.clientMinio.bucket_exists(self.bucket_name):
                 self.clientMinio.make_bucket(self.bucket_name)
-        except S3Error:
-            pass
+        except S3Error as e:
+            raise StorageConnectionError(
+                self.clientMinio._base_url._url.geturl(),
+                f"Failed to ensure bucket exists: {e}"
+            ) from e
 
     def upload_file(
         self, object_key: str, file_data: bytes, file_size: int, content_type: str
@@ -43,16 +51,19 @@ class StorageService:
             The object key where the file was stored
 
         Raises:
-            S3Error: If the upload fails
+            FileUploadError: If the upload fails
         """
-        (self.clientMinio.put_object(
-            self.bucket_name,
-            object_key,
-            BytesIO(file_data),
-            file_size,
-            content_type=content_type,
-        ))
-        return object_key
+        try:
+            self.clientMinio.put_object(
+                self.bucket_name,
+                object_key,
+                BytesIO(file_data),
+                file_size,
+                content_type=content_type,
+            )
+            return object_key
+        except S3Error as e:
+            raise FileUploadError(object_key, self.bucket_name, e) from e
 
     def download_file(self, object_key: str) -> bytes:
         """Download a file from MinIO.
@@ -64,12 +75,14 @@ class StorageService:
             The file content as bytes
 
         Raises:
-            S3Error: If the download fails
+            FileDownloadError: If the download fails
         """
         response = None
         try:
             response = self.clientMinio.get_object(self.bucket_name, object_key)
             return response.read()
+        except S3Error as e:
+            raise FileDownloadError(object_key, self.bucket_name, e) from e
         finally:
             if response:
                 response.close()
@@ -77,13 +90,16 @@ class StorageService:
 
 
     def is_available(self) -> bool:
-        """Check if MinIO is available and accessible."""
+        """Check if MinIO is available and accessible.
+
+        Returns:
+            True if MinIO is accessible, False otherwise
+        """
         try:
             self.clientMinio.bucket_exists(self.bucket_name)
             return True
         except Exception:
             return False
-
 
 _storage_service: StorageService | None = None
 

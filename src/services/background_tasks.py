@@ -1,10 +1,15 @@
 """Background tasks for document processing."""
 import logging
-from datetime import datetime,timezone
+from datetime import datetime, timezone
 
 from sqlalchemy.orm import Session
 
 from src.config.database import get_session_local
+from src.exceptions import (
+    DocumentProcessingError,
+    FileDownloadError,
+    StatusUpdateError,
+)
 from src.models.database import Document, DocumentChunk
 from src.preprocessing.chunking import TextChunker
 from src.preprocessing.extractors import DocumentExtractor
@@ -86,17 +91,42 @@ def process_document_task(
         document.processed_at = datetime.now(timezone.utc)
         db.commit()
 
-    except Exception as e:
-        logger.error(f"Error processing document {document_id}: {str(e)}")
+    except FileDownloadError as e:
+        logger.error(f"Download failed for document {document_id}: {e}")
         db.rollback()
-        try:
-            document = db.get(Document, document_id)
-            if document:
-                document.processing_status = "error"
-                document.extraction_error = str(e)
-                document.processed_at = datetime.now(timezone.utc)
-                db.commit()
-        except Exception:
-            db.rollback()
+        _update_document_error(db, document_id, "error", e)
+    except DocumentProcessingError as e:
+        logger.error(f"Processing failed for document {document_id}: {e}")
+        db.rollback()
+        _update_document_error(db, document_id, "error", e)
+    except Exception as e:
+        logger.error(f"Unexpected error processing document {document_id}: {e}")
+        db.rollback()
+        _update_document_error(db, document_id, "error", e)
     finally:
         db.close()
+
+
+def _update_document_error(
+    db: Session, document_id: int, status: str, error: str | Exception
+) -> None:
+    """Update document with error status.
+
+    Args:
+        db: Database session
+        document_id: The document ID to update
+        status: The status to set
+        error: The error message or exception
+    """
+    error_message = str(error) if isinstance(error, Exception) else error
+    try:
+        document = db.get(Document, document_id)
+        if document:
+            document.processing_status = status
+            document.extraction_error = error_message
+            document.processed_at = datetime.now(timezone.utc)
+            db.commit()
+    except Exception as e:
+        logger.error(f"Failed to update document {document_id} status: {e}")
+        db.rollback()
+        raise StatusUpdateError(document_id, status, str(e)) from e

@@ -104,7 +104,10 @@ class TestUploadEndpoint:
         )
 
         assert response.status_code == 400
-        assert "Invalid file type" in response.json()["detail"]
+        data = response.json()
+        assert data["error_type"] == "InvalidFileTypeError"
+        assert "message" in data
+        assert data["details"]["content_type"] == "image/png"
 
     def test_upload_large_file_returns_413(self, client, sample_large_file):
         """POST /upload with >50MB file returns 413."""
@@ -115,7 +118,9 @@ class TestUploadEndpoint:
         )
 
         assert response.status_code == 413
-        assert "File too large" in response.json()["detail"]
+        data = response.json()
+        assert data["error_type"] == "FileSizeExceededError"
+        assert "message" in data
 
     def test_upload_no_file_returns_422(self, client):
         """POST /upload without file returns 422."""
@@ -132,18 +137,22 @@ class TestUploadEndpoint:
         )
 
         assert response.status_code == 503
-        assert "Storage service is currently unavailable" in response.json()["detail"]
+        data = response.json()
+        assert data["error_type"] == "StorageConnectionError"
+        assert "message" in data
 
     # Response validation
-    def test_error_response_has_detail(self, client, sample_invalid_file):
-        """Error responses contain 'detail' field."""
+    def test_error_response_has_correct_format(self, client, sample_invalid_file):
+        """Error responses contain error_type and message fields."""
         filename, content, content_type = sample_invalid_file
         response = client.post(
             "/api/v1/upload",
             files={"file": (filename, content, content_type)},
         )
 
-        assert "detail" in response.json()
+        data = response.json()
+        assert "error_type" in data
+        assert "message" in data
 
 
 class TestDocumentStatusEndpoint:
@@ -206,7 +215,9 @@ class TestDocumentStatusEndpoint:
         response = client.get("/api/v1/documents/99999")
 
         assert response.status_code == 404
-        assert "Document not found" in response.json()["detail"]
+        data = response.json()
+        assert data["error_type"] == "DocumentNotFoundError"
+        assert data["details"]["document_id"] == 99999
 
     def test_get_document_invalid_id_returns_422(self, client):
         """GET /documents/{id} returns 422 for invalid document ID."""
@@ -397,7 +408,9 @@ class TestDocumentChunksEndpoint:
         response = client.get("/api/v1/documents/99999/chunks")
 
         assert response.status_code == 404
-        assert "Document not found" in response.json()["detail"]
+        data = response.json()
+        assert data["error_type"] == "DocumentNotFoundError"
+        assert data["details"]["document_id"] == 99999
 
     def test_get_chunks_invalid_id_returns_422(self, client):
         """GET /documents/{id}/chunks returns 422 for invalid document ID."""

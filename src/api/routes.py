@@ -1,22 +1,31 @@
-from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Path, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, Path, UploadFile
 from sqlalchemy.orm import Session
 
 from src.config.database import get_db
-from src.models.database import Document, DocumentChunk
 from src.models.schemas import (
-    ChunkResponse,
     DocumentChunksResponse,
     DocumentStatusResponse,
+    ErrorResponse,
     UploadResponse,
 )
 from src.services.background_tasks import process_document_task
 from src.services.document_service import DocumentService
 from src.services.storage_service import StorageService, get_storage_service
 
+
 router = APIRouter(prefix="/api/v1", tags=["documents"])
 
 
-@router.post("/upload", response_model=UploadResponse, status_code=201)
+@router.post(
+    "/upload",
+    response_model=UploadResponse,
+    status_code=201,
+    responses={
+        400: {"model": ErrorResponse, "description": "Invalid file type"},
+        413: {"model": ErrorResponse, "description": "File too large"},
+        503: {"model": ErrorResponse, "description": "Storage unavailable"},
+    },
+)
 async def upload_document(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
@@ -30,7 +39,6 @@ async def upload_document(
     service = DocumentService(db, storage_service)
     result = await service.upload_document(file)
 
-    # Launch background task for text extraction
     background_tasks.add_task(
         process_document_task,
         document_id=result.doc_id,
@@ -41,7 +49,13 @@ async def upload_document(
     return result
 
 
-@router.get("/documents/{document_id}", response_model=DocumentStatusResponse)
+@router.get(
+    "/documents/{document_id}",
+    response_model=DocumentStatusResponse,
+    responses={
+        404: {"model": ErrorResponse, "description": "Document not found"},
+    },
+)
 async def get_document_status(
     document_id: int = Path(..., gt=0),
     db: Session = Depends(get_db),
@@ -51,27 +65,17 @@ async def get_document_status(
     Returns:
         Document status including processing state and text preview if available
     """
-    document = db.get(Document, document_id)
-    if not document:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    text_preview = None
-    if document.extracted_text:
-        text_preview = document.extracted_text[:200]
-
-    return DocumentStatusResponse(
-        id=document.id,
-        filename=document.filename,
-        status=document.processing_status,
-        page_count=document.page_count,
-        text_preview=text_preview,
-        error=document.extraction_error,
-        processed_at=document.processed_at,
-        upload_timestamp=document.upload_timestamp,
-    )
+    service = DocumentService(db)
+    return service.get_document_status(document_id)
 
 
-@router.get("/documents/{document_id}/chunks", response_model=DocumentChunksResponse)
+@router.get(
+    "/documents/{document_id}/chunks",
+    response_model=DocumentChunksResponse,
+    responses={
+        404: {"model": ErrorResponse, "description": "Document not found"},
+    },
+)
 async def get_document_chunks(
     document_id: int = Path(..., gt=0),
     db: Session = Depends(get_db),
@@ -81,30 +85,5 @@ async def get_document_chunks(
     Returns:
         Document info and list of chunks with their content and metadata
     """
-    document = db.get(Document, document_id)
-    if not document:
-        raise HTTPException(status_code=404, detail="Document not found")
-
-    chunks = (
-        db.query(DocumentChunk)
-        .filter(DocumentChunk.document_id == document_id)
-        .order_by(DocumentChunk.chunk_index)
-        .all()
-    )
-
-    return DocumentChunksResponse(
-        document_id=document.id,
-        filename=document.filename,
-        status=document.processing_status,
-        total_chunks=len(chunks),
-        chunks=[
-            ChunkResponse(
-                id=chunk.id,
-                chunk_index=chunk.chunk_index,
-                content=chunk.content,
-                metadata=chunk.chunk_metadata,
-                created_at=chunk.created_at,
-            )
-            for chunk in chunks
-        ],
-    )
+    service = DocumentService(db)
+    return service.get_document_chunks(document_id)

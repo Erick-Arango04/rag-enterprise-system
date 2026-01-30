@@ -1,5 +1,6 @@
 import pytest
 
+from src.exceptions import InvalidChunkConfigError
 from src.preprocessing.chunking import CHUNKING_CONFIG, TextChunk, TextChunker
 
 
@@ -83,10 +84,10 @@ class TestTextChunker:
 
     def test_chunker_overlap_validation(self):
         """Test chunker rejects overlap >= chunk_size."""
-        with pytest.raises(ValueError, match="chunk_overlap must be less than chunk_size"):
+        with pytest.raises(InvalidChunkConfigError):
             TextChunker(chunk_size=100, chunk_overlap=100)
 
-        with pytest.raises(ValueError, match="chunk_overlap must be less than chunk_size"):
+        with pytest.raises(InvalidChunkConfigError):
             TextChunker(chunk_size=100, chunk_overlap=150)
 
     def test_chunk_empty_text(self, chunker):

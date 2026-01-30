@@ -49,3 +49,17 @@ class DocumentChunksResponse(BaseModel):
     status: str
     total_chunks: int
     chunks: list[ChunkResponse]
+
+
+class ErrorResponse(BaseModel):
+    """Standard error response format for all API errors.
+
+    Attributes:
+        error_type: The exception class name for programmatic handling
+        message: Human-readable error description
+        details: Optional exception-specific data
+    """
+
+    error_type: str
+    message: str
+    details: Optional[dict] = None

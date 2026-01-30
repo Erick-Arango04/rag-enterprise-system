@@ -1,11 +1,22 @@
 from datetime import datetime, timezone
 
-from fastapi import HTTPException, UploadFile
+from fastapi import UploadFile
 from sqlalchemy.orm import Session
-from minio.error import S3Error
 
-from src.models.database import Document
-from src.models.schemas import UploadResponse
+from src.exceptions import (
+    DocumentNotFoundError,
+    FileUploadError,
+    FileSizeExceededError,
+    InvalidFileTypeError,
+    StorageConnectionError,
+)
+from src.models.database import Document, DocumentChunk
+from src.models.schemas import (
+    ChunkResponse,
+    DocumentChunksResponse,
+    DocumentStatusResponse,
+    UploadResponse,
+)
 from src.services.storage_service import StorageService
 
 
@@ -23,7 +34,9 @@ ALLOWED_MIME_TYPES = {
 class DocumentService:
     """Business logic for document operations."""
 
-    def __init__(self, db: Session, storage_service: StorageService):
+    TEXT_PREVIEW_LENGTH = 200
+
+    def __init__(self, db: Session, storage_service: StorageService | None = None):
         self.db = db
         self.storage_service = storage_service
 
@@ -37,31 +50,36 @@ class DocumentService:
             UploadResponse with document details
 
         Raises:
-            HTTPException: 400 if invalid MIME type, 413 if file too large,
-                          503 if storage unavailable
+            InvalidFileTypeError: If MIME type is not allowed
+            FileSizeExceededError: If file exceeds MAX_FILE_SIZE
+            StorageConnectionError: If storage service is unavailable
+            FileUploadError: If upload to storage fails
         """
-
         # If file.content_type is None → use default
         content_type = file.content_type or "application/octet-stream"
+        filename = file.filename or "unknown"
+
         if content_type not in ALLOWED_MIME_TYPES:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid file type: {content_type}. Allowed: PDF, DOCX, TXT, MD",
+            raise InvalidFileTypeError(
+                filename=filename,
+                content_type=content_type,
+                allowed_types=list(ALLOWED_MIME_TYPES),
             )
 
         file_data = await file.read()
         file_size = len(file_data)
 
         if file_size > MAX_FILE_SIZE:
-            raise HTTPException(
-                status_code=413,
-                detail=f"File too large: {file_size} bytes. Max: 50MB",
+            raise FileSizeExceededError(
+                filename=filename,
+                file_size=file_size,
+                max_size=MAX_FILE_SIZE,
             )
 
         if not self.storage_service.is_available():
-            raise HTTPException(
-                status_code=503,
-                detail="Storage service is currently unavailable",
+            raise StorageConnectionError(
+                endpoint="storage",
+                message="Storage service is currently unavailable",
             )
 
         document = Document(
@@ -82,16 +100,84 @@ class DocumentService:
             )
             document.minio_object_key = object_key
             self.db.commit()
-        except S3Error:
+        except FileUploadError:
             self.db.rollback()
-            raise HTTPException(
-                status_code=503,
-                detail="Storage service is currently unavailable",
-            )
+            raise
 
         return UploadResponse(
             doc_id=document.id,
             filename=document.filename,
             status=document.processing_status,
             minio_object_key=object_key,
+        )
+
+    def get_document_status(self, document_id: int) -> DocumentStatusResponse:
+        """Get the processing status of a document.
+
+        Args:
+            document_id: The ID of the document to retrieve
+
+        Returns:
+            DocumentStatusResponse with document status and preview
+
+        Raises:
+            DocumentNotFoundError: If document does not exist
+        """
+        document = self.db.get(Document, document_id)
+        if not document:
+            raise DocumentNotFoundError(document_id)
+
+        text_preview = None
+        if document.extracted_text:
+            text_preview = document.extracted_text[: self.TEXT_PREVIEW_LENGTH]
+
+        return DocumentStatusResponse(
+            id=document.id,
+            filename=document.filename,
+            status=document.processing_status,
+            page_count=document.page_count,
+            text_preview=text_preview,
+            error=document.extraction_error,
+            processed_at=document.processed_at,
+            upload_timestamp=document.upload_timestamp,
+        )
+
+    def get_document_chunks(self, document_id: int) -> DocumentChunksResponse:
+        """Get all chunks for a document ordered by chunk_index.
+
+        Args:
+            document_id: The ID of the document
+
+        Returns:
+            DocumentChunksResponse with document info and chunk list
+
+        Raises:
+            DocumentNotFoundError: If document does not exist
+        """
+        document = self.db.get(Document, document_id)
+        if not document:
+            raise DocumentNotFoundError(document_id)
+
+        chunks = (
+            self.db.query(DocumentChunk)
+            .filter(DocumentChunk.document_id == document_id)
+            .order_by(DocumentChunk.chunk_index)
+            .all()
+        )
+
+        return DocumentChunksResponse(
+            document_id=document.id,
+            filename=document.filename,
+            status=document.processing_status,
+            total_chunks=len(chunks),
+            chunks=[
+                ChunkResponse(
+                    id=chunk.id,
+                    chunk_index=chunk.chunk_index,
+                    content=chunk.content,
+                    metadata=chunk.chunk_metadata,
+                    created_at=chunk.created_at,
+                )
+                for chunk in chunks
+            ],
         )

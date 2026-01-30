@@ -6,7 +6,7 @@ from typing import Optional, Tuple
 import pdfplumber
 from docx import Document as DocxDocument
 
-from src.preprocessing.exceptions import (
+from src.exceptions import (
     CorruptedFileError,
     UnsupportedFormatError,
 )
@@ -79,7 +79,7 @@ class DocumentExtractor:
 
                 return extracted_text, page_count, None
         except Exception as e:
-            raise CorruptedFileError(filename, f"Failed to parse PDF: {str(e)}")
+            raise CorruptedFileError(filename, f"Failed to parse PDF: {e}")
 
     def extract_from_docx(
         self, file_data: bytes, filename: str
@@ -104,7 +104,7 @@ class DocumentExtractor:
 
             return extracted_text, page_count, None
         except Exception as e:
-            raise CorruptedFileError(filename, f"Failed to parse DOCX: {str(e)}")
+            raise CorruptedFileError(filename, f"Failed to parse DOCX: {e}")
 
     def extract_from_text(
         self, file_data: bytes, filename: str
@@ -126,7 +126,7 @@ class DocumentExtractor:
                 extracted_text = file_data.decode("latin-1")
             except UnicodeDecodeError as e:
                 raise CorruptedFileError(
-                    filename, f"Failed to decode text file: {str(e)}"
+                    filename, f"Failed to decode text file: {e}"
                 )
 
         # Text files are considered as 1 page

@@ -2,6 +2,7 @@ import pytest
 from unittest.mock import MagicMock, patch
 from minio.error import S3Error
 
+from src.exceptions import FileDownloadError, FileUploadError
 from src.services.storage_service import StorageService
 
 
@@ -45,7 +46,7 @@ class TestStorageService:
         mock_minio_client.put_object.assert_called_once()
 
     def test_upload_file_minio_error(self, storage_service, mock_minio_client):
-        """Test S3Error is raised when MinIO fails."""
+        """Test FileUploadError is raised when MinIO fails."""
         mock_minio_client.put_object.side_effect = S3Error(
             "PutObject",
             "NoSuchBucket",
@@ -56,7 +57,7 @@ class TestStorageService:
             None,
         )
 
-        with pytest.raises(S3Error):
+        with pytest.raises(FileUploadError):
             storage_service.upload_file(
                 "documents/1/test.pdf", b"content", 7, "application/pdf"
             )
@@ -109,7 +110,7 @@ class TestStorageService:
         mock_response.release_conn.assert_called_once()
 
     def test_download_file_minio_error(self, storage_service, mock_minio_client):
-        """Test S3Error is raised when MinIO download fails."""
+        """Test FileDownloadError is raised when MinIO download fails."""
         storage_service.clientMinio = mock_minio_client
         mock_minio_client.get_object.side_effect = S3Error(
             "GetObject",
@@ -121,7 +122,7 @@ class TestStorageService:
             None,
         )
 
-        with pytest.raises(S3Error):
+        with pytest.raises(FileDownloadError):
             storage_service.download_file("documents/1/missing.pdf")
 
     def test_download_file_closes_response_on_error(self, storage_service, mock_minio_client):
