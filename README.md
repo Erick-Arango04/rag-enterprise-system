@@ -314,11 +314,12 @@ rag-enterprise-system/
 │   ├── middleware/
 │   │   └── logging_middleware.py # HTTP request/response logging
 │   ├── models/
+│   │   ├── chunk.py              # TextChunk data model
 │   │   ├── database.py           # ORM models (Document, DocumentChunk)
 │   │   └── schemas.py            # Pydantic request/response schemas
 │   ├── preprocessing/
 │   │   ├── extractors.py         # Text extraction (PDF, DOCX, TXT, MD)
-│   │   └── chunking.py           # Semantic text chunking with overlap
+│   │   └── chunking.py           # TextChunker class for semantic chunking
 │   ├── services/
 │   │   ├── storage_service.py    # MinIO client wrapper
 │   │   ├── document_service.py   # Document upload logic
@@ -327,7 +328,7 @@ rag-enterprise-system/
 │   ├── utils/
 │   │   └── logging.py            # Structured JSON logging utilities
 │   └── main.py                   # Application entry point
-├── tests/                        # Test files (145 tests)
+├── tests/                        # Test files (149 tests)
 │   ├── conftest.py               # Pytest fixtures
 │   ├── test_storage_service.py   # Storage unit tests
 │   ├── test_document_service.py  # Document unit tests
