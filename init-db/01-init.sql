@@ -10,7 +10,10 @@ CREATE TABLE IF NOT EXISTS documents (
     upload_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     processing_status VARCHAR(50) DEFAULT 'pending',
     metadata JSONB,
-    minio_object_key VARCHAR(500)
+    minio_object_key VARCHAR(500),
+    page_count INTEGER,
+    extraction_error TEXT,
+    processed_at TIMESTAMP
 );
 
 -- Tabla de chunks con vectores
@@ -32,6 +35,10 @@ WITH (lists = 100);
 -- Índice para búsquedas por documento
 CREATE INDEX IF NOT EXISTS idx_chunks_document_id
 ON document_chunks(document_id);
+
+-- Índice para consultas de cola de procesamiento
+CREATE INDEX IF NOT EXISTS idx_documents_status
+ON documents(processing_status);
 
 -- Verificar que pgvector está instalado
 SELECT extname, extversion FROM pg_extension WHERE extname = 'vector';

@@ -1,13 +1,14 @@
 import pytest
-from unittest.mock import MagicMock, patch, call
-from datetime import datetime, timezone
+from unittest.mock import MagicMock, patch
 
 from src.services.background_tasks import process_document_task
 from src.models.database import Document, DocumentChunk
+from src.preprocessing.extractors import PageContent
+from src.models.chunk import TextChunk
 
 
 class TestProcessDocumentTask:
-    """Unit tests for process_document_task background task."""
+    """Unit tests for process_document_task background task with streaming."""
 
     @pytest.fixture
     def mock_document(self):
@@ -16,7 +17,6 @@ class TestProcessDocumentTask:
         doc.id = 1
         doc.filename = "test.pdf"
         doc.processing_status = "pending"
-        doc.extracted_text = None
         doc.page_count = None
         doc.extraction_error = None
         doc.processed_at = None
@@ -36,8 +36,33 @@ class TestProcessDocumentTask:
         session_local.return_value = mock_db_session
         return session_local
 
-    def test_successful_extraction(self, mock_document, mock_db_session, mock_session_local):
-        """Test successful document processing flow."""
+    def _create_mock_pages(self, texts):
+        """Helper to create mock PageContent objects."""
+        total = len(texts)
+        for i, text in enumerate(texts):
+            yield PageContent(
+                text=text,
+                page_number=i + 1,
+                total_pages=total,
+                is_last=(i == total - 1),
+            )
+
+    def _create_mock_chunks(self, contents):
+        """Helper to create mock TextChunk objects."""
+        for i, content in enumerate(contents):
+            yield TextChunk(
+                content=content,
+                chunk_index=i,
+                start_char=i * 100,
+                end_char=(i + 1) * 100,
+                metadata={"page_number": 1},
+            )
+
+    def test_successful_extraction_with_streaming(self, mock_document, mock_db_session, mock_session_local):
+        """Test successful document processing with streaming pipeline."""
+        added_objects = []
+        mock_db_session.add.side_effect = lambda obj: added_objects.append(obj)
+
         with patch("src.services.background_tasks.get_session_local") as mock_get_session:
             mock_get_session.return_value = mock_session_local
 
@@ -48,21 +73,32 @@ class TestProcessDocumentTask:
 
                 with patch("src.services.background_tasks.DocumentExtractor") as mock_extractor_class:
                     mock_extractor = MagicMock()
-                    mock_extractor.extract.return_value = ("Extracted text", 5, None)
+                    mock_extractor.extract_pages.return_value = self._create_mock_pages(
+                        ["Page 1 text", "Page 2 text"]
+                    )
                     mock_extractor_class.return_value = mock_extractor
 
-                    process_document_task(
-                        document_id=1,
-                        minio_object_key="documents/2024/01/1_test.pdf",
-                        content_type="application/pdf",
-                    )
+                    with patch("src.services.background_tasks.TextChunker") as mock_chunker_class:
+                        mock_chunker = MagicMock()
+                        mock_chunker.chunk_streaming.return_value = self._create_mock_chunks(
+                            ["chunk1", "chunk2", "chunk3"]
+                        )
+                        mock_chunker_class.return_value = mock_chunker
 
-                    # Verify status was updated to completed (after chunking)
-                    assert mock_document.processing_status == "completed"
-                    assert mock_document.extracted_text == "Extracted text"
-                    assert mock_document.page_count == 5
-                    assert mock_document.processed_at is not None
-                    mock_db_session.commit.assert_called()
+                        process_document_task(
+                            document_id=1,
+                            minio_object_key="documents/2024/01/1_test.pdf",
+                            content_type="application/pdf",
+                        )
+
+                        # Verify status was updated to completed
+                        assert mock_document.processing_status == "completed"
+                        assert mock_document.page_count == 1  # From chunk metadata
+                        assert mock_document.processed_at is not None
+
+                        # Verify chunks were created
+                        chunk_adds = [obj for obj in added_objects if isinstance(obj, DocumentChunk)]
+                        assert len(chunk_adds) == 3
 
     def test_document_not_found(self, mock_db_session, mock_session_local):
         """Test handling when document is not found."""
@@ -72,29 +108,59 @@ class TestProcessDocumentTask:
             mock_get_session.return_value = mock_session_local
 
             with patch("src.services.background_tasks.StorageService"):
-                # Should return early without error
                 process_document_task(
                     document_id=999,
                     minio_object_key="documents/2024/01/999_test.pdf",
                     content_type="application/pdf",
                 )
 
-                # Verify no extraction was attempted
                 mock_db_session.close.assert_called_once()
 
-    def test_extraction_failure(self, mock_document, mock_db_session, mock_session_local):
-        """Test handling when extraction fails."""
+    def test_extraction_failure_unsupported_format(self, mock_document, mock_db_session, mock_session_local):
+        """Test handling when extraction fails due to unsupported format."""
+        from src.exceptions import UnsupportedFormatError
+
         with patch("src.services.background_tasks.get_session_local") as mock_get_session:
             mock_get_session.return_value = mock_session_local
 
             with patch("src.services.background_tasks.StorageService") as mock_storage_class:
                 mock_storage = MagicMock()
-                mock_storage.download_file.return_value = b"corrupted content"
+                mock_storage.download_file.return_value = b"content"
                 mock_storage_class.return_value = mock_storage
 
                 with patch("src.services.background_tasks.DocumentExtractor") as mock_extractor_class:
                     mock_extractor = MagicMock()
-                    mock_extractor.extract.return_value = (None, None, "Failed to parse PDF")
+                    mock_extractor.extract_pages.side_effect = UnsupportedFormatError(
+                        "test.xyz", "application/unknown"
+                    )
+                    mock_extractor_class.return_value = mock_extractor
+
+                    process_document_task(
+                        document_id=1,
+                        minio_object_key="documents/2024/01/1_test.xyz",
+                        content_type="application/unknown",
+                    )
+
+                    assert mock_document.processing_status == "extraction_failed"
+                    assert "Unsupported format" in mock_document.extraction_error
+
+    def test_extraction_failure_corrupted_file(self, mock_document, mock_db_session, mock_session_local):
+        """Test handling when extraction fails due to corrupted file."""
+        from src.exceptions import CorruptedFileError
+
+        with patch("src.services.background_tasks.get_session_local") as mock_get_session:
+            mock_get_session.return_value = mock_session_local
+
+            with patch("src.services.background_tasks.StorageService") as mock_storage_class:
+                mock_storage = MagicMock()
+                mock_storage.download_file.return_value = b"corrupted"
+                mock_storage_class.return_value = mock_storage
+
+                with patch("src.services.background_tasks.DocumentExtractor") as mock_extractor_class:
+                    mock_extractor = MagicMock()
+                    mock_extractor.extract_pages.side_effect = CorruptedFileError(
+                        "test.pdf", "Failed to parse PDF"
+                    )
                     mock_extractor_class.return_value = mock_extractor
 
                     process_document_task(
@@ -104,9 +170,7 @@ class TestProcessDocumentTask:
                     )
 
                     assert mock_document.processing_status == "extraction_failed"
-                    assert mock_document.extraction_error == "Failed to parse PDF"
-                    assert mock_document.processed_at is not None
-                    mock_db_session.commit.assert_called()
+                    assert "Failed to parse PDF" in mock_document.extraction_error
 
     def test_download_exception_handling(self, mock_document, mock_db_session, mock_session_local):
         """Test handling when MinIO download fails."""
@@ -124,7 +188,6 @@ class TestProcessDocumentTask:
                     content_type="application/pdf",
                 )
 
-                # Verify error status was set
                 assert mock_document.processing_status == "error"
                 assert "Connection refused" in mock_document.extraction_error
                 mock_db_session.rollback.assert_called()
@@ -133,10 +196,6 @@ class TestProcessDocumentTask:
         """Test that status is set to 'processing' before extraction begins."""
         status_changes = []
 
-        def track_status_change(value):
-            status_changes.append(value)
-
-        # Track status changes
         type(mock_document).processing_status = property(
             lambda self: status_changes[-1] if status_changes else "pending",
             lambda self, v: status_changes.append(v),
@@ -152,19 +211,22 @@ class TestProcessDocumentTask:
 
                 with patch("src.services.background_tasks.DocumentExtractor") as mock_extractor_class:
                     mock_extractor = MagicMock()
-                    mock_extractor.extract.return_value = ("text", 1, None)
+                    mock_extractor.extract_pages.return_value = self._create_mock_pages(["text"])
                     mock_extractor_class.return_value = mock_extractor
 
-                    process_document_task(
-                        document_id=1,
-                        minio_object_key="key",
-                        content_type="application/pdf",
-                    )
+                    with patch("src.services.background_tasks.TextChunker") as mock_chunker_class:
+                        mock_chunker = MagicMock()
+                        mock_chunker.chunk_streaming.return_value = self._create_mock_chunks(["chunk"])
+                        mock_chunker_class.return_value = mock_chunker
 
-                    # First status change should be "processing"
-                    assert "processing" in status_changes
-                    # Final status should be "completed" (after chunking)
-                    assert status_changes[-1] == "completed"
+                        process_document_task(
+                            document_id=1,
+                            minio_object_key="key",
+                            content_type="application/pdf",
+                        )
+
+                        assert "processing" in status_changes
+                        assert status_changes[-1] == "completed"
 
     def test_db_session_always_closed(self, mock_document, mock_db_session, mock_session_local):
         """Test that database session is always closed, even on error."""
@@ -185,7 +247,7 @@ class TestProcessDocumentTask:
                 mock_db_session.close.assert_called_once()
 
     def test_extractor_receives_correct_arguments(self, mock_document, mock_db_session, mock_session_local):
-        """Test that extractor receives correct file data and content type."""
+        """Test that extractor.extract_pages receives correct arguments."""
         with patch("src.services.background_tasks.get_session_local") as mock_get_session:
             mock_get_session.return_value = mock_session_local
 
@@ -196,23 +258,28 @@ class TestProcessDocumentTask:
 
                 with patch("src.services.background_tasks.DocumentExtractor") as mock_extractor_class:
                     mock_extractor = MagicMock()
-                    mock_extractor.extract.return_value = ("text", 1, None)
+                    mock_extractor.extract_pages.return_value = iter([])
                     mock_extractor_class.return_value = mock_extractor
 
-                    process_document_task(
-                        document_id=1,
-                        minio_object_key="documents/2024/01/1_test.pdf",
-                        content_type="application/pdf",
-                    )
+                    with patch("src.services.background_tasks.TextChunker") as mock_chunker_class:
+                        mock_chunker = MagicMock()
+                        mock_chunker.chunk_streaming.return_value = iter([])
+                        mock_chunker_class.return_value = mock_chunker
 
-                    mock_extractor.extract.assert_called_once_with(
-                        b"pdf content",
-                        "application/pdf",
-                        "test.pdf",
-                    )
+                        process_document_task(
+                            document_id=1,
+                            minio_object_key="documents/2024/01/1_test.pdf",
+                            content_type="application/pdf",
+                        )
 
-    def test_successful_extraction_creates_chunks(self, mock_document, mock_db_session, mock_session_local):
-        """Test that chunks are created after successful extraction."""
+                        mock_extractor.extract_pages.assert_called_once_with(
+                            b"pdf content",
+                            "application/pdf",
+                            "test.pdf",
+                        )
+
+    def test_chunks_created_with_correct_metadata(self, mock_document, mock_db_session, mock_session_local):
+        """Test that chunks are created with correct metadata."""
         added_objects = []
         mock_db_session.add.side_effect = lambda obj: added_objects.append(obj)
 
@@ -226,15 +293,12 @@ class TestProcessDocumentTask:
 
                 with patch("src.services.background_tasks.DocumentExtractor") as mock_extractor_class:
                     mock_extractor = MagicMock()
-                    mock_extractor.extract.return_value = ("Text for chunking", 1, None)
+                    mock_extractor.extract_pages.return_value = self._create_mock_pages(["text"])
                     mock_extractor_class.return_value = mock_extractor
 
                     with patch("src.services.background_tasks.TextChunker") as mock_chunker_class:
                         mock_chunker = MagicMock()
-                        mock_chunker.chunk_to_db_records.return_value = [
-                            {"document_id": 1, "chunk_index": 0, "content": "chunk1", "metadata": {}},
-                            {"document_id": 1, "chunk_index": 1, "content": "chunk2", "metadata": {}},
-                        ]
+                        mock_chunker.chunk_streaming.return_value = self._create_mock_chunks(["chunk"])
                         mock_chunker_class.return_value = mock_chunker
 
                         process_document_task(
@@ -243,17 +307,17 @@ class TestProcessDocumentTask:
                             content_type="application/pdf",
                         )
 
-                        # Verify TextChunker was called
-                        mock_chunker.chunk_to_db_records.assert_called_once()
-
-                        # Verify chunks were added (2 DocumentChunk objects)
                         chunk_adds = [obj for obj in added_objects if isinstance(obj, DocumentChunk)]
-                        assert len(chunk_adds) == 2
-                        assert chunk_adds[0].chunk_index == 0
-                        assert chunk_adds[1].chunk_index == 1
+                        assert len(chunk_adds) == 1
+                        chunk = chunk_adds[0]
+                        assert chunk.document_id == 1
+                        assert chunk.chunk_index == 0
+                        assert chunk.content == "chunk"
+                        assert "filename" in chunk.chunk_metadata
+                        assert chunk.chunk_metadata["filename"] == "test.pdf"
 
-    def test_chunks_have_correct_document_id(self, mock_document, mock_db_session, mock_session_local):
-        """Test that each chunk references the correct document."""
+    def test_batch_processing_flushes_chunks(self, mock_document, mock_db_session, mock_session_local):
+        """Test that chunks are flushed in batches."""
         added_objects = []
         mock_db_session.add.side_effect = lambda obj: added_objects.append(obj)
 
@@ -267,14 +331,15 @@ class TestProcessDocumentTask:
 
                 with patch("src.services.background_tasks.DocumentExtractor") as mock_extractor_class:
                     mock_extractor = MagicMock()
-                    mock_extractor.extract.return_value = ("Sample text", 1, None)
+                    mock_extractor.extract_pages.return_value = self._create_mock_pages(["text"])
                     mock_extractor_class.return_value = mock_extractor
 
                     with patch("src.services.background_tasks.TextChunker") as mock_chunker_class:
                         mock_chunker = MagicMock()
-                        mock_chunker.chunk_to_db_records.return_value = [
-                            {"document_id": 1, "chunk_index": 0, "content": "text", "metadata": {}},
-                        ]
+                        # Create 60 chunks to trigger batch flush (batch size is 50)
+                        mock_chunker.chunk_streaming.return_value = self._create_mock_chunks(
+                            [f"chunk{i}" for i in range(60)]
+                        )
                         mock_chunker_class.return_value = mock_chunker
 
                         process_document_task(
@@ -283,11 +348,14 @@ class TestProcessDocumentTask:
                             content_type="application/pdf",
                         )
 
+                        # Verify flush was called (at least once for batch)
+                        assert mock_db_session.flush.call_count >= 1
+                        # Verify all 60 chunks were added
                         chunk_adds = [obj for obj in added_objects if isinstance(obj, DocumentChunk)]
-                        assert all(chunk.document_id == 1 for chunk in chunk_adds)
+                        assert len(chunk_adds) == 60
 
-    def test_chunks_include_filename_in_metadata(self, mock_document, mock_db_session, mock_session_local):
-        """Test that chunk_to_db_records is called with filename in extra_metadata."""
+    def test_empty_extraction_completes_successfully(self, mock_document, mock_db_session, mock_session_local):
+        """Test that empty extraction (no chunks) completes successfully."""
         with patch("src.services.background_tasks.get_session_local") as mock_get_session:
             mock_get_session.return_value = mock_session_local
 
@@ -298,12 +366,12 @@ class TestProcessDocumentTask:
 
                 with patch("src.services.background_tasks.DocumentExtractor") as mock_extractor_class:
                     mock_extractor = MagicMock()
-                    mock_extractor.extract.return_value = ("Sample text", 1, None)
+                    mock_extractor.extract_pages.return_value = iter([])  # Empty generator
                     mock_extractor_class.return_value = mock_extractor
 
                     with patch("src.services.background_tasks.TextChunker") as mock_chunker_class:
                         mock_chunker = MagicMock()
-                        mock_chunker.chunk_to_db_records.return_value = []
+                        mock_chunker.chunk_streaming.return_value = iter([])  # No chunks
                         mock_chunker_class.return_value = mock_chunker
 
                         process_document_task(
@@ -312,76 +380,5 @@ class TestProcessDocumentTask:
                             content_type="application/pdf",
                         )
 
-                        # Verify extra_metadata includes filename
-                        call_kwargs = mock_chunker.chunk_to_db_records.call_args[1]
-                        assert call_kwargs["extra_metadata"] == {"filename": "test.pdf"}
-
-    def test_extraction_failure_does_not_create_chunks(self, mock_document, mock_db_session, mock_session_local):
-        """Test that no chunks are created when extraction fails."""
-        added_objects = []
-        mock_db_session.add.side_effect = lambda obj: added_objects.append(obj)
-
-        with patch("src.services.background_tasks.get_session_local") as mock_get_session:
-            mock_get_session.return_value = mock_session_local
-
-            with patch("src.services.background_tasks.StorageService") as mock_storage_class:
-                mock_storage = MagicMock()
-                mock_storage.download_file.return_value = b"content"
-                mock_storage_class.return_value = mock_storage
-
-                with patch("src.services.background_tasks.DocumentExtractor") as mock_extractor_class:
-                    mock_extractor = MagicMock()
-                    mock_extractor.extract.return_value = (None, None, "Extraction failed")
-                    mock_extractor_class.return_value = mock_extractor
-
-                    with patch("src.services.background_tasks.TextChunker") as mock_chunker_class:
-                        mock_chunker = MagicMock()
-                        mock_chunker_class.return_value = mock_chunker
-
-                        process_document_task(
-                            document_id=1,
-                            minio_object_key="documents/2024/01/1_test.pdf",
-                            content_type="application/pdf",
-                        )
-
-                        # Verify TextChunker was never called
-                        mock_chunker.chunk_to_db_records.assert_not_called()
-
-                        # Verify no DocumentChunk objects were added
-                        chunk_adds = [obj for obj in added_objects if isinstance(obj, DocumentChunk)]
-                        assert len(chunk_adds) == 0
-
-    def test_empty_text_creates_no_chunks(self, mock_document, mock_db_session, mock_session_local):
-        """Test that empty extracted text produces no chunks."""
-        added_objects = []
-        mock_db_session.add.side_effect = lambda obj: added_objects.append(obj)
-
-        with patch("src.services.background_tasks.get_session_local") as mock_get_session:
-            mock_get_session.return_value = mock_session_local
-
-            with patch("src.services.background_tasks.StorageService") as mock_storage_class:
-                mock_storage = MagicMock()
-                mock_storage.download_file.return_value = b"content"
-                mock_storage_class.return_value = mock_storage
-
-                with patch("src.services.background_tasks.DocumentExtractor") as mock_extractor_class:
-                    mock_extractor = MagicMock()
-                    # Empty text extraction (successful but empty)
-                    mock_extractor.extract.return_value = ("", 1, None)
-                    mock_extractor_class.return_value = mock_extractor
-
-                    with patch("src.services.background_tasks.TextChunker") as mock_chunker_class:
-                        mock_chunker = MagicMock()
-                        # TextChunker returns empty list for empty text
-                        mock_chunker.chunk_to_db_records.return_value = []
-                        mock_chunker_class.return_value = mock_chunker
-
-                        process_document_task(
-                            document_id=1,
-                            minio_object_key="documents/2024/01/1_test.pdf",
-                            content_type="application/pdf",
-                        )
-
-                        # Verify no DocumentChunk objects were added
-                        chunk_adds = [obj for obj in added_objects if isinstance(obj, DocumentChunk)]
-                        assert len(chunk_adds) == 0
+                        assert mock_document.processing_status == "completed"
+                        assert mock_document.page_count == 1  # Default

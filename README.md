@@ -194,7 +194,6 @@ Stores document metadata and processing status.
 | file_size | INTEGER | Size in bytes |
 | minio_object_key | VARCHAR(500) | MinIO storage reference |
 | processing_status | VARCHAR(50) | pending/processing/completed/extraction_failed/error |
-| extracted_text | TEXT | Full extracted text content |
 | page_count | INTEGER | Number of pages (for PDFs) |
 | extraction_error | TEXT | Error message if extraction failed |
 | processed_at | TIMESTAMP | When processing completed |
@@ -233,15 +232,61 @@ Stores text chunks with vector embeddings.
 - **Index Type**: IVFFlat with 100 lists
 - **Distance Metric**: Cosine similarity
 
+## Error Handling
+
+The system implements a comprehensive exception hierarchy with custom handlers for production-ready error responses.
+
+### Exception Categories
+
+| Category | Exceptions | HTTP Status |
+|----------|------------|-------------|
+| Document | `DocumentNotFoundError`, `InvalidFileTypeError`, `FileSizeExceededError` | 404, 400, 413 |
+| Storage | `StorageConnectionError`, `BucketNotFoundError`, `FileUploadError`, `FileDownloadError` | 503 |
+| Preprocessing | `ExtractionError`, `CorruptedFileError`, `UnsupportedFormatError`, `ChunkingError` | 500, 422, 415, 500 |
+| Processing | `DocumentProcessingError`, `StatusUpdateError` | 500 |
+
+### Error Response Format
+
+All errors return a consistent JSON structure:
+
+```json
+{
+  "detail": "Human-readable error message",
+  "error_code": "DOCUMENT_NOT_FOUND",
+  "context": {"document_id": 123}
+}
+```
+
+## Observability
+
+### Structured Logging
+
+The system uses `structlog` for JSON-formatted logging with contextual information:
+
+- Request/response logging via middleware
+- Processing pipeline events
+- Error tracking with stack traces
+- Document lifecycle events
+
+### HTTP Logging Middleware
+
+All HTTP requests are logged with:
+- Request method and path
+- Response status code
+- Processing duration
+- Client information
+
 ## Document Processing Pipeline
 
-1. **Upload** - Store document in MinIO, create record with `status='pending'`
-2. **Background Processing** - Download from MinIO, extract text using appropriate extractor (PDF, DOCX, TXT, MD)
-3. **Chunking** - Split text into overlapping chunks (default: 1000 chars, 200 overlap)
-4. **Storage** - Store chunks in `document_chunks` table with position metadata
-5. **Completion** - Update document `status` to `'completed'`
-6. **Embedding Generation** - Generate embeddings via Claude API *(planned)*
-7. **Semantic Search** - Query similar chunks using pgvector *(planned)*
+| Step | Description | Status |
+|------|-------------|--------|
+| 1. Upload | Store document in MinIO, create record with `status='pending'` | Implemented |
+| 2. Background Processing | Download from MinIO, extract text (PDF, DOCX, TXT, MD) | Implemented |
+| 3. Chunking | Split text into overlapping chunks (1000 chars, 200 overlap) | Implemented |
+| 4. Storage | Store chunks in `document_chunks` with position metadata | Implemented |
+| 5. Completion | Update document `status` to `'completed'` | Implemented |
+| 6. Embedding Generation | Generate embeddings via Claude API | Planned |
+| 7. Semantic Search | Query similar chunks using pgvector | Planned |
 
 ### Chunking Configuration
 - **Chunk Size**: 1000 characters
@@ -255,23 +300,34 @@ Stores text chunks with vector embeddings.
 rag-enterprise-system/
 ├── src/                          # Application source code
 │   ├── api/
-│   │   └── routes.py             # API route definitions
+│   │   ├── routes.py             # API route definitions
+│   │   └── exception_handlers.py # Custom exception handlers
 │   ├── config/
 │   │   ├── settings.py           # Environment configuration
 │   │   └── database.py           # SQLAlchemy session management
+│   ├── exceptions/               # Custom exception hierarchy
+│   │   ├── base.py               # RAGSystemError base class
+│   │   ├── document.py           # Document-related exceptions
+│   │   ├── preprocessing.py      # Extraction/chunking exceptions
+│   │   ├── processing.py         # Processing pipeline exceptions
+│   │   └── storage.py            # Storage/MinIO exceptions
+│   ├── middleware/
+│   │   └── logging_middleware.py # HTTP request/response logging
 │   ├── models/
 │   │   ├── database.py           # ORM models (Document, DocumentChunk)
 │   │   └── schemas.py            # Pydantic request/response schemas
 │   ├── preprocessing/
 │   │   ├── extractors.py         # Text extraction (PDF, DOCX, TXT, MD)
-│   │   ├── chunking.py           # Text chunking with overlap
-│   │   └── exceptions.py         # Custom extraction exceptions
+│   │   └── chunking.py           # Semantic text chunking with overlap
 │   ├── services/
 │   │   ├── storage_service.py    # MinIO client wrapper
 │   │   ├── document_service.py   # Document upload logic
-│   │   └── background_tasks.py   # Async processing (extraction + chunking)
+│   │   ├── background_tasks.py   # Async processing (extraction + chunking)
+│   │   └── embedding_service.py  # Embedding generation (stub)
+│   ├── utils/
+│   │   └── logging.py            # Structured JSON logging utilities
 │   └── main.py                   # Application entry point
-├── tests/                        # Test files (102 tests)
+├── tests/                        # Test files (145 tests)
 │   ├── conftest.py               # Pytest fixtures
 │   ├── test_storage_service.py   # Storage unit tests
 │   ├── test_document_service.py  # Document unit tests
@@ -279,10 +335,15 @@ rag-enterprise-system/
 │   ├── test_background_tasks.py  # Background task tests
 │   ├── test_extractors.py        # Extractor unit tests
 │   ├── test_chunking.py          # Chunking unit tests
+│   ├── test_exception_handlers.py # Exception handler tests
 │   └── test_exceptions.py        # Exception tests
 ├── init-db/                      # Database initialization scripts
 │   └── 01-init.sql               # Schema and pgvector setup
+├── migrations/                   # Database migrations
+│   └── 003_add_extraction_columns.sql
+├── scripts/                      # Utility scripts
 ├── docker-compose.yml            # Container orchestration
+├── docker-compose.debug.yml      # Debug configuration
 ├── Dockerfile                    # API container build
 ├── requirements.txt              # Python dependencies
 └── CLAUDE.md                     # AI assistant instructions

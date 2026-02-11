@@ -5,7 +5,8 @@ from src.exceptions import (
     ExtractionError,
     UnsupportedFormatError,
 )
-from src.preprocessing.chunking import CHUNKING_CONFIG, TextChunk, TextChunker
+from src.models.chunk import TextChunk
+from src.preprocessing.chunking import CHUNKING_CONFIG, TextChunker
 from src.preprocessing.extractors import DocumentExtractor
 
 __all__ = [

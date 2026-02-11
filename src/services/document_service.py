@@ -127,9 +127,17 @@ class DocumentService:
         if not document:
             raise DocumentNotFoundError(document_id)
 
+        # Get text preview from first chunk
         text_preview = None
-        if document.extracted_text:
-            text_preview = document.extracted_text[: self.TEXT_PREVIEW_LENGTH]
+        if document.processing_status == "completed":
+            first_chunk = (
+                self.db.query(DocumentChunk)
+                .filter(DocumentChunk.document_id == document_id)
+                .order_by(DocumentChunk.chunk_index)
+                .first()
+            )
+            if first_chunk:
+                text_preview = first_chunk.content[: self.TEXT_PREVIEW_LENGTH]
 
         return DocumentStatusResponse(
             id=document.id,

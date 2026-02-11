@@ -16,8 +16,7 @@ from src.services.storage_service import StorageService, get_storage_service
 router = APIRouter(prefix="/api/v1", tags=["documents"])
 
 
-@router.post(
-    "/upload",
+@router.post("/upload",
     response_model=UploadResponse,
     status_code=201,
     responses={

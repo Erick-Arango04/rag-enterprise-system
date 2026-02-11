@@ -1,7 +1,8 @@
 import pytest
 
 from src.exceptions import InvalidChunkConfigError
-from src.preprocessing.chunking import CHUNKING_CONFIG, TextChunk, TextChunker
+from src.models.chunk import TextChunk
+from src.preprocessing.chunking import CHUNKING_CONFIG, TextChunker
 
 
 class TestChunkingConfig:

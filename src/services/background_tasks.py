@@ -1,14 +1,17 @@
 """Background tasks for document processing."""
 import logging
 from datetime import datetime, timezone
+from typing import List
 
 from sqlalchemy.orm import Session
 
 from src.config.database import get_session_local
 from src.exceptions import (
+    CorruptedFileError,
     DocumentProcessingError,
     FileDownloadError,
     StatusUpdateError,
+    UnsupportedFormatError,
 )
 from src.models.database import Document, DocumentChunk
 from src.preprocessing.chunking import TextChunker
@@ -17,13 +20,19 @@ from src.services.storage_service import StorageService
 
 logger = logging.getLogger(__name__)
 
+# Batch size for database inserts
+CHUNK_BATCH_SIZE = 50
+
 
 def process_document_task(
     document_id: int,
     minio_object_key: str,
     content_type: str,
 ) -> None:
-    """Background task to process document extraction.
+    """Background task to process document extraction using streaming.
+
+    Processes documents page-by-page for memory efficiency, saving chunks
+    in batches as they are produced.
 
     Args:
         document_id: The ID of the document to process
@@ -50,46 +59,66 @@ def process_document_task(
         logger.info(f"Downloading file from MinIO: {minio_object_key}")
         file_data = storage_service.download_file(minio_object_key)
 
-        # Extract text
+        # Process using streaming pipeline
         extractor = DocumentExtractor()
-        extracted_text, page_count, error = extractor.extract(
-            file_data, content_type, document.filename
-        )
+        chunker = TextChunker()
 
-        # Update document with results
-        if error:
-            logger.warning(f"Extraction failed for document {document_id}: {error}")
-            document.processing_status = "extraction_failed"
-            document.extraction_error = error
-        else:
-            logger.info(f"Text extraction complete for document {document_id}")
-            document.extracted_text = extracted_text
-            document.page_count = page_count
+        chunk_batch: List[DocumentChunk] = []
+        total_chunks = 0
+        page_count = 0
 
-            # Chunk the extracted text
-            logger.info(f"Starting chunking for document {document_id}")
-            chunker = TextChunker()
-            chunk_records = chunker.chunk_to_db_records(
-                extracted_text,
-                document_id=document_id,
-                extra_metadata={"filename": document.filename}
+        try:
+            # Stream pages and chunks
+            pages_generator = extractor.extract_pages(
+                file_data, content_type, document.filename
             )
 
-            # Store chunks in database
-            for record in chunk_records:
-                chunk = DocumentChunk(
-                    document_id=record["document_id"],
-                    chunk_index=record["chunk_index"],
-                    content=record["content"],
-                    chunk_metadata=record["metadata"],
+            for chunk in chunker.chunk_streaming(pages_generator):
+                # Track page count from chunk metadata
+                if chunk.metadata and "page_number" in chunk.metadata:
+                    page_count = max(page_count, chunk.metadata["page_number"])
+
+                # Create database record
+                db_chunk = DocumentChunk(
+                    document_id=document_id,
+                    chunk_index=chunk.chunk_index,
+                    content=chunk.content,
+                    chunk_metadata={
+                        "start_char": chunk.start_char,
+                        "end_char": chunk.end_char,
+                        "filename": document.filename,
+                        **(chunk.metadata or {}),
+                    },
                 )
-                db.add(chunk)
+                chunk_batch.append(db_chunk)
+                total_chunks += 1
 
+                # Batch insert when batch is full
+                if len(chunk_batch) >= CHUNK_BATCH_SIZE:
+                    _save_chunk_batch(db, chunk_batch)
+                    chunk_batch = []
+
+            # Save remaining chunks
+            if chunk_batch:
+                _save_chunk_batch(db, chunk_batch)
+
+            # Update document status
+            document.page_count = page_count if page_count > 0 else 1
             document.processing_status = "completed"
-            logger.info(f"Document {document_id} completed: {len(chunk_records)} chunks created")
+            document.processed_at = datetime.now(timezone.utc)
+            db.commit()
 
-        document.processed_at = datetime.now(timezone.utc)
-        db.commit()
+            logger.info(
+                f"Document {document_id} completed: {total_chunks} chunks created "
+                f"from {page_count} pages"
+            )
+
+        except (UnsupportedFormatError, CorruptedFileError) as e:
+            logger.warning(f"Extraction failed for document {document_id}: {e}")
+            document.processing_status = "extraction_failed"
+            document.extraction_error = str(e)
+            document.processed_at = datetime.now(timezone.utc)
+            db.commit()
 
     except FileDownloadError as e:
         logger.error(f"Download failed for document {document_id}: {e}")
@@ -105,6 +134,18 @@ def process_document_task(
         _update_document_error(db, document_id, "error", e)
     finally:
         db.close()
+
+
+def _save_chunk_batch(db: Session, chunks: List[DocumentChunk]) -> None:
+    """Save a batch of chunks to the database.
+
+    Args:
+        db: Database session
+        chunks: List of DocumentChunk objects to save
+    """
+    for chunk in chunks:
+        db.add(chunk)
+    db.flush()
 
 
 def _update_document_error(

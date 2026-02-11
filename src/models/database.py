@@ -16,7 +16,6 @@ class Document(Base):
     processing_status = Column(String(50), default="pending")
     doc_metadata = Column("metadata", JSON)
     minio_object_key = Column(String(500))
-    extracted_text = Column(Text)
     page_count = Column(Integer)
     extraction_error = Column(Text)
     processed_at = Column(DateTime)
